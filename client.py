@@ -1,6 +1,7 @@
 from datetime import datetime
 import socket
 import threading
+import subprocess
 
 from kivy.app import App
 from kivy.clock import Clock
@@ -24,6 +25,34 @@ class ptr:
     def get(self): return self.obj
     def set(self, obj): self.obj = obj
 
+class ServiceListener():
+    def remove_service(self, zeroconf, type, name):
+        info = zeroconf.get_service_info(type, name)
+        if info:
+            # print("Service %s removed, service info:%s" % (name, info))
+            # if info.properties:
+            #     for key, value in info.properties.items():
+            #         print("     %s: %s" % (key, value))
+            ChatClient.services = refresh_services(info)
+        else:
+            print("Service %s removed, no services left" % (name, ))
+
+    def add_service(self, zeroconf, type, name):
+        info = zeroconf.get_service_info(type, name)
+        if info:
+            ChatClient.services = refresh_services(info)
+
+        else:
+            print("Service %s added, service info: %s" % (name, info))
+
+def refresh_services(info):
+    client_list = {}
+    if info.name =='nonlinear_chat_client._http._tcp.local.':
+                if info.properties and 'user' in info.properties:
+                    client_list[info.properties['user']] = (info.properties['user'], socket.inet_ntoa(info.address), info.port)
+
+    return client_list
+
 class ChatHistory(TextInput):
     instance = None
 
@@ -39,6 +68,15 @@ class ChatHistory(TextInput):
         #c_from = self.selection_from
         #c_to = self.selection_to
         self.history = self.history + [ChatClient.uname + ' [' + get_time() + '] $ ' + input.text]
+
+        builder = osc_message_builder.OscMessageBuilder("/ensemble_nonlinear/ch4t/")
+        builder.add_arg(ChatClient.uname)
+        builder.add_arg(get_time())
+        builder.add_arg(input.text)
+        output = builder.build()
+        services = ChatClient.services
+        for key, value in services.items():
+            ChatClient.osc[OSC_BROADCASTER].nl_send_msg((value[SVC_ADDR], value[SVC_PORT]), output)
         #diff = 0
         #while (len(self.history) > 200):
         #    diff = diff + len(self.history.pop(0))
@@ -53,7 +91,7 @@ class ChatHistory(TextInput):
         input.text = ''
 
     def push_msg(self, input):
-        self.history = self.history + [input[1] + ' [' + input[2] + '] $ ' + input[3]]
+        self.history = self.history + [input[MSG_USER] + ' [' + input[MSG_TIME] + '] $ ' + input[MSG_CONTENT]]
         self.text = '\n'.join(self.history)
 
 class InputBox(TextInput):
@@ -109,6 +147,13 @@ class InputPane(BoxLayout):
         self.submit=InputSubmitButton()
         self.add_widget(self.submit)
 
+def get_computer_name():
+        cmd = "scutil --get ComputerName"
+        process = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
+        output, error = process.communicate()
+
+        return output[:-1].decode('utf-8')
+
 def get_time():
     return datetime.now().strftime("%H:%M:%S")
 
@@ -117,8 +162,9 @@ def chat_receive(unused_addr, args, msg):
 
 def link_patch(unused_addr, args, msg):
     ChatHistory.instance.get().push_msg([ChatClient.uname, get_time(), msg[2]])
-    builder = OscMessageBuilder(msg[0])
+    builder = osc_message_builder.OscMessageBuilder(msg[0])
     builder.add_arg(ChatClient.ports[OSC_LISTENER])
+    output = builder.build()
     ChatClient.osc[OSC_BROADCASTER].nl_send_msg((LOCALHOST, msg[1]), output)
 
 LOCALHOST = "127.0.0.1"
@@ -126,6 +172,15 @@ OSC_LISTENER = 0
 OSC_BROADCASTER = 1
 ZCONF_REGISTER = 0
 ZCONF_BROWSER = 1
+
+SVC_USER = 0
+SVC_ADDR = 1
+SVC_PORT = 2
+
+MSG_PATH = 0
+MSG_USER = 1
+MSG_TIME = 2
+MSG_CONTENT = 3
 
 class ChatClient(BoxLayout):
     uname = None
@@ -138,7 +193,8 @@ class ChatClient(BoxLayout):
 
     def __init__(self, **kwargs):
         super(ChatClient, self).__init__(**kwargs)
-        ChatClient.uname = socket.gethostbyaddr(socket.gethostname())[0].split('.')[0]
+        ChatClient.uname = get_computer_name()
+        #ChatClient.uname = ' '.join(socket.gethostbyaddr(socket.gethostname())[0].split('.'))
         self.padding = 10
         self.orientation='vertical'
         self.history=ChatHistory()
@@ -150,8 +206,13 @@ class ChatClient(BoxLayout):
         self.dispatcher.map("/ensemble_nonlinear/ch4t/", chat_receive)
         self.dispatcher.map("/ensemble_nonlinear/link_patch", link_patch)
 
+        zconf = Zeroconf()
         ChatClient.osc = self.init_osc()
-        ChatClient.zconf = self.init_zconf()
+
+        if ChatClient.uname == "anonymous":
+            ChatClient.uname += ':'+str(ChatClient.ports[OSC_LISTENER])
+
+        ChatClient.zconf = self.init_zconf(zconf)
 
     def __del__(self):
         if ChatClient.osc != None:
@@ -161,7 +222,9 @@ class ChatClient(BoxLayout):
             ChatClient.zconf[ZCONF_REGISTER].unregister_service(ChatClient.service_info)
 
     def init_osc(self):
-        listening_port, broadcasting_port = ChatClient.ports = self.get_open_ports()
+        ChatClient.ports = self.get_open_ports()
+        listening_port = ChatClient.ports[OSC_LISTENER]
+        broadcasting_port = ChatClient.ports[OSC_BROADCASTER]
 
         print("Listening on port: %d", listening_port)
         print("Broadcasting on port: %d", broadcasting_port)
@@ -181,26 +244,26 @@ class ChatClient(BoxLayout):
         #return udp_client.SimpleUDPClient("127.0.0.1", 5005)
         return NonlinearOSCClient()
 
-    def init_zconf(self):
-        return (self.init_service_registry(), self.init_service_browser())
+    def init_zconf(self, zeroconf):
+        return (self.init_service_registry(zeroconf), self.init_service_browser(zeroconf))
 
-    def init_service_browser(self):
-        return None
+    def init_service_browser(self, zeroconf):
+        listener = ServiceListener()
+        browser = ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
 
-    def init_service_registry(self):
+    def init_service_registry(self, zeroconf):
         desc = {'user': ChatClient.uname}
         info = ServiceInfo("_http._tcp.local.",
                          "nonlinear_chat_client._http._tcp.local.",
                          socket.inet_aton(LOCALHOST),
                          ChatClient.ports[OSC_LISTENER], 0, 0, desc)
-        r = Zeroconf()
         ChatClient.service_info = info
-        r.register_service(info)
-        return r
+        zeroconf.register_service(info)
+        return zeroconf
 
     def get_open_ports(self):
         ports = [None, None]
-        for i in range(0,1):
+        for i in range(0,2):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.bind(("", 0))
             s.listen(1)
@@ -228,3 +291,4 @@ if __name__ == '__main__':
     ChatClient.osc[OSC_LISTENER].shutdown()
     ChatClient.osc = None
     ChatClient.zconf[ZCONF_REGISTER].unregister_service(ChatClient.service_info)
+    ChatClient.zconf[ZCONF_REGISTER].close()
