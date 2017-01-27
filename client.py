@@ -27,31 +27,33 @@ class ptr:
 
 class ServiceListener():
     def remove_service(self, zeroconf, type, name):
+        ChatClient.services = {}
         info = zeroconf.get_service_info(type, name)
         if info:
             # print("Service %s removed, service info:%s" % (name, info))
             # if info.properties:
             #     for key, value in info.properties.items():
             #         print("     %s: %s" % (key, value))
-            ChatClient.services = refresh_services(info)
+            print("Removing => " + str(info))
+            #ChatClient.services = refresh_services(info)
         else:
             print("Service %s removed, no services left" % (name, ))
 
     def add_service(self, zeroconf, type, name):
         info = zeroconf.get_service_info(type, name)
         if info:
-            ChatClient.services = refresh_services(info)
-
+            print("Adding => " + str(info))
+            ChatClient.services[info.properties[b'user'].decode("utf-8")] = refresh_services(info)
         else:
             print("Service %s added, service info: %s" % (name, info))
 
 def refresh_services(info):
-    client_list = {}
     if info.name =='nonlinear_chat_client._http._tcp.local.':
-                if info.properties and 'user' in info.properties:
-                    client_list[info.properties['user']] = (info.properties['user'], socket.inet_ntoa(info.address), info.port)
+        print("    " + info.properties[b'user'].decode('utf-8'))
+        if info.properties and b'user' in info.properties:
+            return (info.properties[b'user'], socket.inet_ntoa(info.address), info.port)
 
-    return client_list
+    return None
 
 class ChatHistory(TextInput):
     instance = None
@@ -157,9 +159,12 @@ def get_computer_name():
 def get_time():
     return datetime.now().strftime("%H:%M:%S")
 
-def chat_receive(unused_addr, args, msg):
-    ChatHistory.instance.get().push_msg(msg)
+def chat_receive(unused_addr, usr, time, msg):
+    ChatHistory.instance.get().push_msg((usr, time, msg))
 
+'''
+This needs to be fixed, it won't be functional
+'''
 def link_patch(unused_addr, args, msg):
     ChatHistory.instance.get().push_msg([ChatClient.uname, get_time(), msg[2]])
     builder = osc_message_builder.OscMessageBuilder(msg[0])
@@ -177,10 +182,9 @@ SVC_USER = 0
 SVC_ADDR = 1
 SVC_PORT = 2
 
-MSG_PATH = 0
-MSG_USER = 1
-MSG_TIME = 2
-MSG_CONTENT = 3
+MSG_USER = 0
+MSG_TIME = 1
+MSG_CONTENT = 2
 
 class ChatClient(BoxLayout):
     uname = None
@@ -189,7 +193,7 @@ class ChatClient(BoxLayout):
     server_thread = None
     zconf = None
     service_info = None
-    services = None
+    services = {}
 
     def __init__(self, **kwargs):
         super(ChatClient, self).__init__(**kwargs)
@@ -250,6 +254,7 @@ class ChatClient(BoxLayout):
     def init_service_browser(self, zeroconf):
         listener = ServiceListener()
         browser = ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
+        return browser
 
     def init_service_registry(self, zeroconf):
         desc = {'user': ChatClient.uname}
@@ -278,10 +283,11 @@ class ClientApp(App):
 
 class NonlinearOSCClient(udp_client.SimpleUDPClient):
     def __init__(self):
-        super(NonlinearOSCClient, self).__init__("127.0.0.1", 1234)
+        super(NonlinearOSCClient, self).__init__(LOCALHOST, 1234)
 
     def nl_send_msg(self, destination, msg):
         #if not isinstance(destination, tuple) and not isinstance(destination[0], basestring) and not isinstance(destination[1], int):
+        print("SENDING MSG: "+ str(destination[0]) + " " + str(destination[1]))
         self._address = destination[0]
         self._port = destination[1]
         self.send(msg)
@@ -292,3 +298,4 @@ if __name__ == '__main__':
     ChatClient.osc = None
     ChatClient.zconf[ZCONF_REGISTER].unregister_service(ChatClient.service_info)
     ChatClient.zconf[ZCONF_REGISTER].close()
+    ChatClient.zconf[ZCONF_BROWSER].cancel()
