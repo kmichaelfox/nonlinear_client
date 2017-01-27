@@ -2,6 +2,7 @@ from datetime import datetime
 import socket
 import threading
 import subprocess
+import re
 
 from kivy.app import App
 from kivy.clock import Clock
@@ -18,7 +19,7 @@ import time
 import random
 
 from pythonosc import dispatcher, osc_server, osc_message_builder, udp_client
-from zeroconf import ServiceBrowser, ServiceInfo, Zeroconf
+from zeroconf import ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
 
 class ptr:
     def __init__(self, obj): self.obj = obj
@@ -60,16 +61,56 @@ def refresh_services(info):
 
     return None
 
-class ChatHistory(TextInput):
+def service_state_change(zeroconf, service_type, name, state_change):
+    print("Service %s of type %s state changed: %s" % (name, service_type, state_change))
+
+    if (not CLIENT_NAME.match(name)):
+        print("Unrecognized service, skipping...")
+        return
+
+    info = zeroconf.get_service_info(service_type, name)
+
+    if state_change is ServiceStateChange.Added:
+        print("ADDING   |\n        |v|")
+        if info:
+            print("  Address: %s:%d" % (socket.inet_ntoa(info.address), info.port))
+            print("  Weight: %d, priority:%d" % (info.weight, info.priority))
+            print("  Server: %s" % (info.server,))
+            if info.properties:
+                print("  Properties are:")
+                for key, value in info.properties.items():
+                    print("    %s: %s" % (key, value))
+                ChatClient.services[name] = (info.properties[b'user'], socket.inet_ntoa(info.address), info.port)
+                ChatBuffer.instance.get().push_sys_msg(extract_name(name)+" has connected")
+            else:
+                print("  No properties")
+        else:
+            print("  No info")
+        print('\n')
+    else:
+        #info = zeroconf.get_service_info(service_type, name)
+        print("REMOVING |\n        |v|")
+        print("  %s" % name)
+        if ChatClient.services.pop(name):
+            ChatBuffer.instance.get().push_sys_msg(extract_name(name)+" has disconnected")
+        
+    print("\n")
+    print(ChatClient.services)
+    print("\n")
+
+def extract_name(service_name):
+    return re.sub(USER_NAME_DELIM, '', service_name)
+    
+class ChatBuffer(TextInput):
     instance = None
 
     def __init__(self, **kwargs):
-        super(ChatHistory, self).__init__(**kwargs)
+        super(ChatBuffer, self).__init__(**kwargs)
         self.multiline=True
         self.readonly=True
         self.history = ['Ensemble Nonlinear Client', '']
-        self.text = '\n'.join(self.history)
-        if (ChatHistory.instance == None): ChatHistory.instance = ptr(self)
+        self.refresh_text()
+        if (ChatBuffer.instance == None): ChatBuffer.instance = ptr(self)
 
     def push(self, input):
         #c_from = self.selection_from
@@ -92,13 +133,21 @@ class ChatHistory(TextInput):
         #c_from = min(0, c_from - diff)
         #c_to = min(0, c_to - diff)
 
-        self.text = '\n'.join(self.history)
+        self.refresh_text()
         #self.selection_from = c_from
         #self.selection_to = c_to
         input.text = ''
 
     def push_msg(self, input):
-        self.history = self.history + [input[MSG_USER] + ' [' + input[MSG_TIME] + '] $ ' + input[MSG_CONTENT]]
+        self.history = self.history + [input[MSG_USER] + ' [' + input[MSG_TIME] + '] $ ' + input[MSG_BODY]]
+        self.refresh_text()
+
+    def push_sys_msg(self, input):
+        lines = input.split('\n')
+        self.history += lines
+        self.refresh_text()
+
+    def refresh_text(self):
         self.text = '\n'.join(self.history)
 
 class InputBox(TextInput):
@@ -118,7 +167,7 @@ class InputBox(TextInput):
             Clock.schedule_once(self.refocus_self)
             return
 
-        ChatHistory.instance.get().push(self)
+        ChatBuffer.instance.get().push(self)
         Clock.schedule_once(self.refocus_self)
 
     def refocus_self(self, *args):
@@ -138,7 +187,7 @@ class InputSubmitButton(Button):
     def callback(instance, value):
         if (len(InputBox.instance.get().text) == 0): return
 
-        ChatHistory.instance.get().push(InputBox.instance.get())
+        ChatBuffer.instance.get().push(InputBox.instance.get())
 
 class InputPane(BoxLayout):
     def __init__(self, **kwargs):
@@ -164,14 +213,14 @@ def get_computer_name():
 def get_time():
     return datetime.now().strftime("%H:%M:%S")
 
-def chat_receive(unused_addr, usr, time, msg):
-    ChatHistory.instance.get().push_msg((usr, time, msg))
+def chat_receive(unused_addr, *args):
+    ChatBuffer.instance.get().push_msg((args[MSG_USER], args[MSG_TIME], args[MSG_BODY]))
 
 '''
 This needs to be fixed, it won't be functional
 '''
 def link_patch(unused_addr, args, msg):
-    ChatHistory.instance.get().push_msg([ChatClient.uname, get_time(), msg[2]])
+    ChatBuffer.instance.get().push_msg([ChatClient.uname, get_time(), msg[2]])
     builder = osc_message_builder.OscMessageBuilder(msg[0])
     builder.add_arg(ChatClient.ports[OSC_LISTENER])
     output = builder.build()
@@ -189,7 +238,11 @@ SVC_PORT = 2
 
 MSG_USER = 0
 MSG_TIME = 1
-MSG_CONTENT = 2
+MSG_BODY = 2
+
+NAME_PATTERN = "_nonlinear_client\._http\._tcp\.local\."
+CLIENT_NAME = re.compile(".+(%s)"%(NAME_PATTERN,), re.U)
+USER_NAME_DELIM = re.compile(NAME_PATTERN, re.U)
 
 class ChatClient(BoxLayout):
     uname = None
@@ -206,7 +259,7 @@ class ChatClient(BoxLayout):
         #ChatClient.uname = ' '.join(socket.gethostbyaddr(socket.gethostname())[0].split('.'))
         self.padding = 10
         self.orientation='vertical'
-        self.history=ChatHistory()
+        self.history=ChatBuffer()
         self.add_widget(self.history)
         self.input_pane=InputPane()
         self.add_widget(self.input_pane)
@@ -258,13 +311,14 @@ class ChatClient(BoxLayout):
 
     def init_service_browser(self, zeroconf):
         listener = ServiceListener()
-        browser = ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
+        #browser = ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
+        browser = ServiceBrowser(zeroconf, "_http._tcp.local.", handlers=[service_state_change])
         return browser
 
     def init_service_registry(self, zeroconf):
         desc = {'user': ChatClient.uname}
         info = ServiceInfo("_http._tcp.local.",
-                         "nonlinear_chat_client._http._tcp.local.",
+                         ChatClient.uname+"_nonlinear_client._http._tcp.local.",
                          socket.inet_aton(socket.gethostbyname(socket.getfqdn())),
                          ChatClient.ports[OSC_LISTENER], 0, 0, desc)
         ChatClient.service_info = info
@@ -302,5 +356,5 @@ if __name__ == '__main__':
     ChatClient.osc[OSC_LISTENER].shutdown()
     ChatClient.osc = None
     ChatClient.zconf[ZCONF_REGISTER].unregister_service(ChatClient.service_info)
-    ChatClient.zconf[ZCONF_REGISTER].close()
     ChatClient.zconf[ZCONF_BROWSER].cancel()
+    ChatClient.zconf[ZCONF_REGISTER].close()
