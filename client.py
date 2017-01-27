@@ -161,6 +161,9 @@ class ChatBuffer(TextInput):
         self.refresh_text()
 
     def refresh_text(self):
+        while (len(self.history) > 200):
+            self.history.pop(0)
+            
         self.text = '\n'.join(self.history)
 
 class InputBox(TextInput):
