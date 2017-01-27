@@ -81,7 +81,8 @@ def service_state_change(zeroconf, service_type, name, state_change):
                 print("  Properties are:")
                 for key, value in info.properties.items():
                     print("    %s: %s" % (key, value))
-                ChatClient.services[name] = (info.properties[b'user'], socket.inet_ntoa(info.address), info.port)
+                if (info.properties[b'user'].decode("utf-8") != ChatClient.uname):
+                    ChatClient.services[name] = (info.properties[b'user'], socket.inet_ntoa(info.address), info.port)
                 ChatBuffer.instance.get().push_sys_msg(extract_name(name)+" has connected")
             else:
                 print("  No properties")
