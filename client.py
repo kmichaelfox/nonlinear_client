@@ -27,7 +27,7 @@ class ptr:
 
 class ServiceListener():
     def remove_service(self, zeroconf, type, name):
-        ChatClient.services = {}
+        #ChatClient.services = {}
         info = zeroconf.get_service_info(type, name)
         if info:
             # print("Service %s removed, service info:%s" % (name, info))
@@ -36,6 +36,7 @@ class ServiceListener():
             #         print("     %s: %s" % (key, value))
             print("Removing => " + str(info))
             #ChatClient.services = refresh_services(info)
+            ChatClient.services[info.properties[b'user'].decode("utf-8")] = refresh_services(info)
         else:
             print("Service %s removed, no services left" % (name, ))
 
