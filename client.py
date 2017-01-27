@@ -40,6 +40,8 @@ class ServiceListener():
         else:
             print("Service %s removed, no services left" % (name, ))
 
+        print(ChatClient.services)
+
     def add_service(self, zeroconf, type, name):
         info = zeroconf.get_service_info(type, name)
         if info:
@@ -47,6 +49,8 @@ class ServiceListener():
             ChatClient.services[info.properties[b'user'].decode("utf-8")] = refresh_services(info)
         else:
             print("Service %s added, service info: %s" % (name, info))
+
+        print(ChatClient.services)
 
 def refresh_services(info):
     if info.name =='nonlinear_chat_client._http._tcp.local.':
