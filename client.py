@@ -3,6 +3,7 @@ import socket
 import threading
 import subprocess
 import re
+import select
 
 from kivy.app import App
 from kivy.clock import Clock
@@ -26,40 +27,40 @@ class ptr:
     def get(self): return self.obj
     def set(self, obj): self.obj = obj
 
-class ServiceListener():
-    def remove_service(self, zeroconf, type, name):
-        #ChatClient.services = {}
-        info = zeroconf.get_service_info(type, name)
-        if info:
-            # print("Service %s removed, service info:%s" % (name, info))
-            # if info.properties:
-            #     for key, value in info.properties.items():
-            #         print("     %s: %s" % (key, value))
-            print("Removing => " + str(info))
-            #ChatClient.services = refresh_services(info)
-            ChatClient.services[info.properties[b'user'].decode("utf-8")] = refresh_services(info)
-        else:
-            print("Service %s removed, no services left" % (name, ))
+# class ServiceListener():
+#     def remove_service(self, zeroconf, type, name):
+#         #ChatClient.services = {}
+#         info = zeroconf.get_service_info(type, name)
+#         if info:
+#             # print("Service %s removed, service info:%s" % (name, info))
+#             # if info.properties:
+#             #     for key, value in info.properties.items():
+#             #         print("     %s: %s" % (key, value))
+#             print("Removing => " + str(info))
+#             #ChatClient.services = refresh_services(info)
+#             ChatClient.services[info.properties[b'user'].decode("utf-8")] = refresh_services(info)
+#         else:
+#             print("Service %s removed, no services left" % (name, ))
 
-        print(ChatClient.services)
+#         print(ChatClient.services)
 
-    def add_service(self, zeroconf, type, name):
-        info = zeroconf.get_service_info(type, name)
-        if info:
-            print("Adding => " + str(info))
-            ChatClient.services[info.properties[b'user'].decode("utf-8")] = refresh_services(info)
-        else:
-            print("Service %s added, service info: %s" % (name, info))
+#     def add_service(self, zeroconf, type, name):
+#         info = zeroconf.get_service_info(type, name)
+#         if info:
+#             print("Adding => " + str(info))
+#             ChatClient.services[info.properties[b'user'].decode("utf-8")] = refresh_services(info)
+#         else:
+#             print("Service %s added, service info: %s" % (name, info))
 
-        print(ChatClient.services)
+#         print(ChatClient.services)
 
-def refresh_services(info):
-    if info.name =='nonlinear_chat_client._http._tcp.local.':
-        print("    " + info.properties[b'user'].decode('utf-8'))
-        if info.properties and b'user' in info.properties:
-            return (info.properties[b'user'], socket.inet_ntoa(info.address), info.port)
+# def refresh_services(info):
+#     if info.name =='nonlinear_chat_client._http._tcp.local.':
+#         print("    " + info.properties[b'user'].decode('utf-8'))
+#         if info.properties and b'user' in info.properties:
+#             return (info.properties[b'user'], socket.inet_ntoa(info.address), info.port)
 
-    return None
+#     return None
 
 def service_state_change(zeroconf, service_type, name, state_change):
     print("Service %s of type %s state changed: %s" % (name, service_type, state_change))
@@ -117,13 +118,14 @@ class ChatBuffer(TextInput):
         #c_to = self.selection_to
         self.history = self.history + [ChatClient.uname + ' [' + get_time() + '] $ ' + input.text]
 
-        builder = osc_message_builder.OscMessageBuilder("/ensemble_nonlinear/ch4t/")
+        builder = osc_message_builder.OscMessageBuilder("/ensemble_nonlinear/ch4t")
         builder.add_arg(ChatClient.uname)
         builder.add_arg(get_time())
         builder.add_arg(input.text)
         output = builder.build()
-        services = ChatClient.services
-        for key, value in services.items():
+        # services = ChatClient.services
+        for key, value in ChatClient.services.items():
+            print("sending message to %s" % (value,))
             ChatClient.osc[OSC_BROADCASTER].nl_send_msg((value[SVC_ADDR], value[SVC_PORT]), output)
         #diff = 0
         #while (len(self.history) > 200):
@@ -213,8 +215,12 @@ def get_computer_name():
 def get_time():
     return datetime.now().strftime("%H:%M:%S")
 
-def chat_receive(unused_addr, *args):
-    ChatBuffer.instance.get().push_msg((args[MSG_USER], args[MSG_TIME], args[MSG_BODY]))
+# def chat_receive(unused_addr, *args):
+#     print("message received")
+#     ChatBuffer.instance.get().push_msg((args[MSG_USER], args[MSG_TIME], args[MSG_BODY]))
+def chat_receive(unused_addr, usr, time, body):
+    print("message received")
+    ChatBuffer.instance.get().push_msg((usr, time, body))
 
 '''
 This needs to be fixed, it won't be functional
@@ -239,6 +245,9 @@ SVC_PORT = 2
 MSG_USER = 0
 MSG_TIME = 1
 MSG_BODY = 2
+
+DEST_ADDR = 0
+DEST_PORT = 1
 
 NAME_PATTERN = "_nonlinear_client\._http\._tcp\.local\."
 CLIENT_NAME = re.compile(".+(%s)"%(NAME_PATTERN,), re.U)
@@ -265,7 +274,7 @@ class ChatClient(BoxLayout):
         self.add_widget(self.input_pane)
 
         self.dispatcher = dispatcher.Dispatcher()
-        self.dispatcher.map("/ensemble_nonlinear/ch4t/", chat_receive)
+        self.dispatcher.map("/ensemble_nonlinear/ch4t", chat_receive)
         self.dispatcher.map("/ensemble_nonlinear/link_patch", link_patch)
 
         zconf = Zeroconf()
@@ -297,20 +306,22 @@ class ChatClient(BoxLayout):
         return (listener, broadcaster)
 
     def init_listener(self, port):
-        server = osc_server.ThreadingOSCUDPServer(("127.0.0.1", port), self.dispatcher)
+        server = osc_server.ThreadingOSCUDPServer((socket.gethostbyname(socket.getfqdn()), port), self.dispatcher)
         ChatClient.server_thread = threading.Thread(target=server.serve_forever)
         ChatClient.server_thread.start()
         return server
 
     def init_broadcaster(self, port):
         #return udp_client.SimpleUDPClient("127.0.0.1", 5005)
-        return NonlinearOSCClient()
+        client = NonlinearOSCClient(LOCALHOST, port)
+        client.connect((LOCALHOST, port))
+        return client
 
     def init_zconf(self, zeroconf):
         return (self.init_service_registry(zeroconf), self.init_service_browser(zeroconf))
 
     def init_service_browser(self, zeroconf):
-        listener = ServiceListener()
+        #listener = ServiceListener()
         #browser = ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
         browser = ServiceBrowser(zeroconf, "_http._tcp.local.", handlers=[service_state_change])
         return browser
@@ -340,20 +351,87 @@ class ClientApp(App):
     def build(self):
         return ChatClient()
 
-class NonlinearOSCClient(udp_client.SimpleUDPClient):
-    def __init__(self):
-        super(NonlinearOSCClient, self).__init__(LOCALHOST, 1234)
+class OSCError(Exception):
+    """Base Class for all OSC-related errors
+    """
+    def __init__(self, message):
+        self.message = message
 
-    def nl_send_msg(self, destination, msg):
+    def __str__(self):
+        return self.message
+
+class OSCClientError(OSCError):
+    """Class for all OSCClient errors
+    """
+    pass
+
+class NonlinearOSCClient(object):
+    SND_BUF_SIZE = 4096 * 8
+    
+    def __init__(self, addr, port):
+        #super(NonlinearOSCClient, self).__init__(LOCALHOST, 1234)
+        self._client_address = (addr, port)
+        self._sock=None
+        #self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        #self._sock.connect(self._client_address)
+        #self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.sndbuf_size)
+        #self._fd = self._sock.fileno()
+
+    def connect(self, address):
+        try:
+            self._ensureConnected(address)
+            self._client_address = address
+        except socket.error as e:
+            self._client_address = None
+            raise OSCClientError("SocketError: %s" % str(e))
+
+    def _ensureConnected(self, address):
+        if not self._sock:
+            self._setSocket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+        self._sock.connect(address)
+
+    def _setSocket(self, skt):
+        if self._sock != None:
+            self.close()
+        self._sock = skt
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, NonlinearOSCClient.SND_BUF_SIZE)
+        self._fd = self._sock.fileno()
+        print("\n\n\t\t\tself._fd = %s\n\n" % (self._fd,))
+
+    def close(self):
+        if self._sock != None:
+            self._sock.close()
+        self._sock = None
+
+    def nl_send_msg(self, addr, msg, timeout=None):
         #if not isinstance(destination, tuple) and not isinstance(destination[0], basestring) and not isinstance(destination[1], int):
-        print("SENDING MSG: "+ str(destination[0]) + " " + str(destination[1]))
-        self._address = destination[0]
-        self._port = destination[1]
-        self.send(msg)
+        print("SENDING MSG: "+ str(addr[DEST_ADDR]) + " " + str(addr[DEST_PORT]))
+        #self._address = destination[0]
+        #self._port = destination[1]
+        #self.send(msg)
+        ret = select.select([], [self._fd], [], timeout)
+        try:
+            ret[1].index(self._fd)
+        except:
+            raise OSCClientError("Timed out wiating for file descriptor")
+
+        try:
+            self._ensureConnected(addr)
+            self._sock.sendall(msg.dgram)
+
+            if self._client_address:
+                self._sock.connect(self._client_address)
+        except OSError:
+            if sys.exc_info()[0] in (7, 65): # 7: no addr associated with node, 65: no route to host
+                raise e
+            else:
+                raise OSCClientError("while sending to %s: %s" % (str(address), str(e)))
+
 
 if __name__ == '__main__':
     ClientApp().run()
     ChatClient.osc[OSC_LISTENER].shutdown()
+    ChatClient.osc[OSC_BROADCASTER].close()
     ChatClient.osc = None
     ChatClient.zconf[ZCONF_REGISTER].unregister_service(ChatClient.service_info)
     ChatClient.zconf[ZCONF_BROWSER].cancel()
