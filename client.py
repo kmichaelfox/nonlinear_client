@@ -260,7 +260,7 @@ class ChatClient(BoxLayout):
         desc = {'user': ChatClient.uname}
         info = ServiceInfo("_http._tcp.local.",
                          "nonlinear_chat_client._http._tcp.local.",
-                         socket.inet_aton(LOCALHOST),
+                         socket.inet_aton(socket.gethostbyname(socket.getfqdn())),
                          ChatClient.ports[OSC_LISTENER], 0, 0, desc)
         ChatClient.service_info = info
         zeroconf.register_service(info)
