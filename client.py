@@ -5,6 +5,13 @@ import subprocess
 import re
 import select
 
+import kivy
+kivy.require('1.9.0')
+
+from kivy.config import Config
+Config.set('graphics', 'width', '400')
+Config.set('graphics', 'height', '700')
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
@@ -65,8 +72,11 @@ class ptr:
 def service_state_change(zeroconf, service_type, name, state_change):
     print("Service %s of type %s state changed: %s" % (name, service_type, state_change))
 
-    if (not CLIENT_NAME.match(name)):
+    if not CLIENT_NAME.match(name):
         print("Unrecognized service, skipping...")
+        return
+
+    if extract_name(name) == ChatClient.uname:
         return
 
     info = zeroconf.get_service_info(service_type, name)
@@ -349,6 +359,13 @@ class ChatClient(BoxLayout):
         return tuple(ports)
 
 class ClientApp(App):
+
+    def build_config(self, config):
+        config.setdefaults('graphics', {
+            'width': '400',
+            'height': '700'
+            })
+
     def build(self):
         return ChatClient()
 
@@ -428,12 +445,18 @@ class NonlinearOSCClient(object):
             else:
                 raise OSCClientError("while sending to %s: %s" % (str(address), str(e)))
 
-
-if __name__ == '__main__':
+def main():
     ClientApp().run()
+
+    # Clean up on shutdown
     ChatClient.osc[OSC_LISTENER].shutdown()
     ChatClient.osc[OSC_BROADCASTER].close()
     ChatClient.osc = None
     ChatClient.zconf[ZCONF_REGISTER].unregister_service(ChatClient.service_info)
     ChatClient.zconf[ZCONF_BROWSER].cancel()
     ChatClient.zconf[ZCONF_REGISTER].close()
+
+
+if __name__ == '__main__':
+    main()
+    
